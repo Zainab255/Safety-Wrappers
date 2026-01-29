@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Safety Wrappers Research</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-inner">
+                <h1 class="logo">Safety Wrappers</h1>
+                <p class="tagline">Finite-state monitors for black-box language models</p>
+            </div>
+        </header>
+
+        <main class="main">
+            <section class="card card-input" aria-labelledby="input-heading">
+                <h2 id="input-heading" class="card-title">Input</h2>
+                <div class="form-group">
+                    <label for="wrapper" class="label">Safety wrapper</label>
+                    <p class="hint">Choose how your prompt is checked before the model answers.</p>
+                    <select id="wrapper" name="wrapper" class="select" aria-describedby="wrapper-desc">
+                        {% for w in wrappers %}
+                        <option value="{{ w.id }}" data-desc="{{ w.description }}">{{ w.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <div id="wrapper-desc" class="wrapper-desc" aria-live="polite" role="status"></div>
+                </div>
+                <div id="query-budget-options" class="form-group query-budget-options" aria-hidden="true" style="display: none;">
+                    <label for="max-queries" class="label">Max model calls per request</label>
+                    <p class="hint">Limits how many times the model can be called for this request. Lower = lower cost.</p>
+                    <select id="max-queries" name="max_queries" class="select select-max-queries" aria-label="Max model calls per request">
+                        {% for n in range(query_budget_min|default(1), (query_budget_max|default(10)) + 1) %}
+                        <option value="{{ n }}" {% if n == (query_budget_default|default(2)) %}selected{% endif %}>{{ n }} call{{ 's' if n != 1 else '' }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="prompt" class="label">Your prompt</label>
+                    <textarea id="prompt" name="prompt" class="textarea" rows="5" placeholder="e.g. What is the capital of France?" aria-label="Your prompt"></textarea>
+                </div>
+                <button id="submit" type="button" class="btn btn-primary">Run</button>
+            </section>
+
+            <section class="card card-output" aria-labelledby="output-heading">
+                <h2 id="output-heading" class="card-title">Output</h2>
+                <div class="meta-grid">
+                    <div class="meta-item">
+                        <span class="meta-label">Decision</span>
+                        <span id="meta-decision" class="meta-value meta-decision">—</span>
+                    </div>
+                    <div class="meta-item meta-item-wide">
+                        <span class="meta-label">Why</span>
+                        <span id="meta-summary" class="meta-value meta-summary">—</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Model calls</span>
+                        <span id="meta-calls" class="meta-value">—</span>
+                    </div>
+                </div>
+                <div id="output" class="output-box" role="region" aria-live="polite" aria-label="Model response">Final answer will appear here.</div>
+                <div id="error" class="error-box" role="alert" style="display: none;"></div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>Research project — Safety wrappers as finite-state monitors</p>
+        </footer>
+    </div>
+
+    <script>
+        (function () {
+            var wrapperSelect = document.getElementById('wrapper');
+            var wrapperDesc = document.getElementById('wrapper-desc');
+            function updateDesc() {
+                var opt = wrapperSelect.options[wrapperSelect.selectedIndex];
+                wrapperDesc.textContent = opt ? (opt.getAttribute('data-desc') || '') : '';
+            }
+            wrapperSelect.addEventListener('change', updateDesc);
+            updateDesc();
+
+            var submitBtn = document.getElementById('submit');
+            var outputEl = document.getElementById('output');
+            var errorEl = document.getElementById('error');
+            var metaDecision = document.getElementById('meta-decision');
+            var metaSummary = document.getElementById('meta-summary');
+            var metaCalls = document.getElementById('meta-calls');
+
+            function setLoading(loading) {
+                submitBtn.disabled = loading;
+                wrapperSelect.disabled = loading;
+                document.getElementById('prompt').readOnly = loading;
+                if (maxQueriesSelect) maxQueriesSelect.disabled = loading || wrapperSelect.value !== 'query_budget';
+                if (loading) {
+                    outputEl.classList.add('loading');
+                    outputEl.innerHTML = '<div class="loader-wrap"><div class="loader-spinner" aria-hidden="true"></div><span>Calling model…</span></div>';
+                    errorEl.style.display = 'none';
+                    metaDecision.textContent = '—';
+                    metaDecision.className = 'meta-value meta-decision';
+                    metaSummary.textContent = '—';
+                    metaCalls.textContent = '—';
+                } else {
+                    outputEl.classList.remove('loading');
+                }
+            }
+
+            function setDecisionClass(el, decision) {
+                el.className = 'meta-value meta-decision';
+                if (decision === 'BLOCK') el.classList.add('decision-block');
+                else if (decision === 'ALLOW') el.classList.add('decision-allow');
+                else if (decision === 'SKIP') el.classList.add('decision-skip');
+            }
+
+            function stripMarkdown(text) {
+                if (!text || typeof text !== 'string') return text;
+                return text
+                    .replace(/\*\*\*/g, '')
+                    .replace(/\*\*/g, '')
+                    .replace(/\*([^*\n]+)\*/g, '$1')
+                    .replace(/_([^_\n]+)_/g, '$1')
+                    .replace(/^#{1,6}\s+/gm, '')
+                    .replace(/~~([^~]+)~~/g, '$1')
+                    .replace(/`([^`]+)`/g, '$1');
+            }
+
+            var queryBudgetOptions = document.getElementById('query-budget-options');
+            var maxQueriesSelect = document.getElementById('max-queries');
+            function toggleQueryBudgetOptions() {
+                var isQueryBudget = wrapperSelect.value === 'query_budget';
+                queryBudgetOptions.style.display = isQueryBudget ? 'block' : 'none';
+                queryBudgetOptions.setAttribute('aria-hidden', !isQueryBudget);
+                if (maxQueriesSelect) maxQueriesSelect.disabled = !isQueryBudget;
+            }
+            wrapperSelect.addEventListener('change', toggleQueryBudgetOptions);
+            toggleQueryBudgetOptions();
+
+            submitBtn.addEventListener('click', function () {
+                var prompt = document.getElementById('prompt').value;
+                var wrapper = document.getElementById('wrapper').value;
+                var payload = { prompt: prompt, wrapper_name: wrapper };
+                if (wrapper === 'query_budget' && maxQueriesSelect) {
+                    var val = parseInt(maxQueriesSelect.value, 10);
+                    if (!isNaN(val)) payload.max_queries = val;
+                }
+                setLoading(true);
+                fetch('/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (x) {
+                    setLoading(false);
+                    if (x.ok) {
+                        var raw = x.data.final_output || '(empty)';
+                        outputEl.textContent = stripMarkdown(raw) || raw;
+                        metaDecision.textContent = x.data.wrapper_decision || '—';
+                        setDecisionClass(metaDecision, x.data.wrapper_decision);
+                        metaSummary.textContent = x.data.decision_summary || '—';
+                        metaCalls.textContent = String(x.data.model_call_count ?? '—');
+                    } else {
+                        errorEl.textContent = x.data.error || 'Request failed';
+                        errorEl.style.display = 'block';
+                        outputEl.textContent = 'Final answer will appear here.';
+                        metaDecision.textContent = '—';
+                        metaDecision.className = 'meta-value meta-decision';
+                    }
+                })
+                .catch(function (e) {
+                    setLoading(false);
+                    errorEl.textContent = e.message || 'Network error';
+                    errorEl.style.display = 'block';
+                    outputEl.textContent = 'Final answer will appear here.';
+                    metaDecision.textContent = '—';
+                    metaDecision.className = 'meta-value meta-decision';
+                });
+            });
+        })();
+    </script>
+</body>
+</html>
