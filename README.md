@@ -1,4 +1,4 @@
-# Safety Wrappers as Finite-State Monitors for Black-Box Language Models
+ # Safety Wrappers as Finite-State Monitors for Black-Box Language Models
 
 Research project: safety wrappers around a black-box LLM (Gemini 2.5 Flash Lite via OpenRouter), implemented as finite-state monitors with formal trace logging.
 
